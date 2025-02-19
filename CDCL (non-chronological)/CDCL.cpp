@@ -102,6 +102,7 @@ Clause conflict_analysis(SolverState &state, int conflict_variable, int &backtra
 
         //does variable have antecedent clause?
         if(state.antecedents.count(var)){
+            
             //antecedent == reason it was assigned 
             Clause *reason = state.antecedents[var];
             for(int lit : reason->literals){
@@ -123,12 +124,11 @@ Clause conflict_analysis(SolverState &state, int conflict_variable, int &backtra
         }
     }
 
-    //return learned clause 
     learned_clause.literals = conflict_literals;
     return learned_clause;
 }
 
-// Heuristic : pick most Frequent unassigned !! 
+// Heuristic : pick most frequent unassigned !! 
 int pick_branching_variable(const SolverState &state) {
     unordered_map<int, int> occurrence_count;
     
@@ -140,7 +140,7 @@ int pick_branching_variable(const SolverState &state) {
         }
     }
     
-    //max frequency o.O
+    //max frequency
     int best_var = -1, max_count = -1;
     for (const auto &[var, count] : occurrence_count) {
         if (count > max_count) {
@@ -152,7 +152,6 @@ int pick_branching_variable(const SolverState &state) {
     return best_var;
 }
 
-//Main Solver
 bool cdcl_solve(SolverState &state) {
     if(state.clauses.empty()) return true;
 
@@ -176,7 +175,7 @@ bool cdcl_solve(SolverState &state) {
             int var = pick_branching_variable(state);
             if (var == -1) return true;  // No conflict & no unassigned variables
             
-            // Make a decision (assign True)
+            // Make a decision == assign True
             state.assignments[var] = 1;
             state.decision_stack.push_back(var);
             state.decision_level++;
