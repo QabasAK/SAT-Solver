@@ -13,40 +13,36 @@ struct Clause {
     vector<int> literals;
 };
 
-struct SolverState {
-    vector<Clause> clauses;
-    unordered_map<int, int> assignments;  // 1 (true), 0 (false)
-    vector<int> decision_stack;  // tracking decisions
-    int decision_level = 0;
-
-    //for non-chronological backtracking
-    unordered_map<int, Clause*> antecedents; //track assignments
+struct AssignmentInfo {
+    int value;      // 1 for true, 0 for false
+    int level;      
+    Clause *reason;     
 };
 
-bool unit_propagation(SolverState &state, int &conflict_variable) {
-    stack<int> propagation_stack; 
-    unordered_set<int> visited;
+struct SolverState {
+    vector<Clause> clauses;
+    unordered_map<int, AssignmentInfo> assignments;  
+    vector<int> trail; 
+    int decision_level = 0;
+};
 
-    // Add assigned variables to check for conflicts with the new assignemnt
-    for (auto &[var, val] : state.assignments)
-        propagation_stack.push(var * (val ? 1 : -1)); //adding polarity as well
+bool unit_propagation(SolverState &state, Clause &conflict_clause) {
+    bool progress = true;
 
-    while (!propagation_stack.empty()) {
-        int lit = propagation_stack.top();
-        propagation_stack.pop();
+    while (progress) {
+        progress = false; 
         
-        // be gone duplicate checks >:(
-        if (visited.find(lit) != visited.end()) continue;
-        visited.insert(lit);
-
         for (auto &clause : state.clauses) {
             int unassigned = 0; // counts # of unassigned vars
             int last_literal = 0; // stores the last seen unassigned literal 
             bool satisfied = false;
 
             for (int l : clause.literals) {
-                if (state.assignments.count(abs(l))) { //every literal that is assigned, check proper assignment
-                    if ((l > 0 && state.assignments[l] == 1) || (l < 0 && state.assignments[-l] == 0)) {
+                int var = abs(l);
+                auto it = state.assignments.find(var);
+                if (it != state.assignments.end()) { 
+                    int val = it->second.value;
+                    if ((l > 0 && val == 1) || (l < 0 && val == 0)) {
                         satisfied = true;
                         break;
                     }
@@ -57,13 +53,25 @@ bool unit_propagation(SolverState &state, int &conflict_variable) {
             }
             if (satisfied) continue;
 
-            if (unassigned == 1) { //one unassigned literal ==> assign it immediately 
-                state.assignments[abs(last_literal)] = (last_literal > 0) ? 1 : 0;
-                propagation_stack.push(last_literal);
-            } else if (unassigned == 0) { //unsatisfiable & no more unassigned literals 
-                conflict_variable = last_literal;
+            if (unassigned == 0) {
+                conflict_clause = clause;
                 return false;
             }
+
+            if (unassigned == 1) { //one unassigned literal ==> assign it immediately 
+                int var = abs(last_literal);
+                int val = (last_literal > 0) ? 1 : 0;
+
+                if(state.assignments.find(var) == state.assignments.end()){
+                    AssignmentInfo info;
+                    info.value = val;
+                    info.level = state.decision_level;
+                    info.reason = &clause;
+                    state.assignments[var] = info;
+                    state.trail.push_back(var);
+                    progress = true;
+                }
+            }        
         }
     }
     return true;
@@ -71,62 +79,90 @@ bool unit_propagation(SolverState &state, int &conflict_variable) {
 
 // Backtrack to the specified decision level
 void backtrack(SolverState &state, int level) {
-    while (!state.decision_stack.empty() && state.decision_stack.back() > level) {
-        int var = abs(state.decision_stack.back());
-        state.assignments.erase(var);
-        state.antecedents.erase(var);
-        state.decision_stack.pop_back();
+    while (!state.trail.empty()) {
+        int var = state.trail.back();
+        if (state.assignments[var].level > level){
+            state.assignments.erase(var);
+            state.trail.pop_back();
+        }
     }
     state.decision_level = level;
 }
 
 // Conflict Analysis s.t. we learn a new clause
-Clause conflict_analysis(SolverState &state, int conflict_variable, int &backtrack_level) {
+Clause conflict_analysis(SolverState &state, Clause &conflict_clause, int &backtrack_level) {
+    // Start with the conflict clause.
+    Clause learned_clause = conflict_clause;
+    int current_level = state.decision_level;
     
-    Clause learned_clause; 
-    unordered_set<int> seen;
-    vector<int> conflict_literals; //storing literals for the learned clause
-
-    //traversing the implication graph
-    stack<int> analysis_stack; //conflict variable & back
-    //start with variable that caused the issue
-    analysis_stack.push(conflict_variable);
-
-    while(!analysis_stack.empty()){
-        int var = analysis_stack.top();
-        analysis_stack.pop();
-
-        //dont process a processed variable 
-        if(seen.count(var)) continue;
-        seen.insert(var);
-
-        //does variable have antecedent clause?
-        if(state.antecedents.count(var)){
-            
-            //antecedent == reason it was assigned 
-            Clause *reason = state.antecedents[var];
-            for(int lit : reason->literals){
-                if(lit != var) analysis_stack.push(abs(lit));
+    // Count the number of literals in learned_clause assigned at the current decision level.
+    int count = 0;
+    for (int lit : learned_clause.literals) {
+        int var = abs(lit);
+        if (state.assignments[var].level == current_level)
+            count++;
+    }
+    
+    int i = state.trail.size() - 1;
+    while (count > 1 && i >= 0) {
+        int var = state.trail[i];
+        bool inClause = false;
+        for (int lit : learned_clause.literals) {
+            if (abs(lit) == var && state.assignments[var].level == current_level) {
+                inClause = true;
+                break;
             }
         }
-        // if no antecedent (no reason for assignment) == decision variable
-        else {
-            conflict_literals.push_back(-var);
+        if (!inClause) {
+            i--;
+            continue;
         }
+        
+        Clause *reason = state.assignments[var].reason;
+        if (reason == nullptr) {
+            i--;
+            continue;
+        }
+        
+        vector<int> new_literals;
+        for (int lit : learned_clause.literals) {
+            if (abs(lit) == var) continue;
+            new_literals.push_back(lit);
+        }
+        for (int lit : reason->literals) {
+            if (abs(lit) == var) continue;
+            bool duplicate = false;
+            for (int existing : new_literals) {
+                if (existing == lit) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate)
+                new_literals.push_back(lit);
+        }
+        learned_clause.literals = new_literals;
+        
+        count = 0;
+        for (int lit : learned_clause.literals) {
+            int v = abs(lit);
+            if (state.assignments[v].level == current_level)
+                count++;
+        }
+        i--;
     }
-
-    //which decision levels are involved in conflict 
+    
     backtrack_level = 0;
-    for(int lit : conflict_literals) {
-        int level = state.assignments[abs(lit)];
-        if( level < state.decision_level){
-            backtrack_level = max(backtrack_level, level);
-        }
+    for (int lit : learned_clause.literals) {
+        int var = abs(lit);
+        int lvl = state.assignments[var].level;
+        if (lvl != current_level && lvl >= backtrack_level)
+            backtrack_level = lvl;
     }
-
-    learned_clause.literals = conflict_literals;
+    
     return learned_clause;
 }
+
 
 // Heuristic : pick most frequent unassigned !! 
 int pick_branching_variable(const SolverState &state) {
@@ -158,27 +194,29 @@ bool cdcl_solve(SolverState &state) {
     for (const auto &clause : state.clauses){
         if (clause.literals.empty()) return false;
     } 
-
+    Clause conflict_clause;
     while (true) {
-        int conflict_variable = 0;
-        
-        if (!unit_propagation(state, conflict_variable)) {
+    
+        if (!unit_propagation(state, conflict_clause)) {
             if (state.decision_level == 0) return false;  // Conflict at level 0 UNSAT :(
             
             int backtrack_level = 0;
-            Clause learned_clause = conflict_analysis(state, conflict_variable, backtrack_level);
+            Clause learned_clause = conflict_analysis(state, conflict_clause, backtrack_level);
+            //if(state.clauses.find(learned_clause) == state.clauses.end())
             state.clauses.push_back(learned_clause);
-            backtrack(state, backtrack_level); // simplified, chronological 
+            backtrack(state, backtrack_level); 
 
         } else {
 
             int var = pick_branching_variable(state);
-            if (var == -1) return true;  // No conflict & no unassigned variables
-            
-            // Make a decision == assign True
-            state.assignments[var] = 1;
-            state.decision_stack.push_back(var);
+            if (var == -1) return true;  
             state.decision_level++;
+            AssignmentInfo info;
+            info.value = 1;  
+            info.level = state.decision_level;
+            info.reason = nullptr; 
+            state.assignments[var] = info;
+            state.trail.push_back(var);
         }
     }
 }
@@ -207,12 +245,12 @@ vector<Clause> read_cnf(const string &filename){
 int main() {
     SolverState state;
     state.clauses = read_cnf(" ");
-
+   
     if (cdcl_solve(state)) {
         cout << "SATISFIABLE <3 \n";
-        /*for (const auto &assignment : state.assignments) {
-            cout << assignment.first << " = " << assignment.second << "\n";
-        }*/
+        for (const auto &assignment : state.assignments) {
+            cout << assignment.first << " = " << assignment.second.value << "\n";
+        }
     } else {
         cout << "UNSATISFIABLE :( \n";
     }
